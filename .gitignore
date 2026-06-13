@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Simulator runtime state (regenerated on run)
+sim/logs/
+sim/captures/
+
+# Wireshark / wire captures live locally and are excluded from the repo.
+# The simulator, golden harness, and decoders read them from usb-capture/
+# when present; see docs and README "Captures" note.
+usb-capture/**/*.pcapng
+usb-capture/**/*.pcap
+usb-capture/**/*.pcapng.gz
+usb-capture/**/*.mp4
+usb-capture/**/*.zip
+usb-capture/**/*.shdp
+usb-capture/**/*.shdd
+usb-capture/**/*.xlsx
+usb-capture/**/*.db
+usb-capture/**/*.ndjson
+# large text/json wire exports
+usb-capture/**/*.txt
+usb-capture/**/*-wheel.json
+usb-capture/**/dash.json
+
+# Editor / OS
+.DS_Store
+*.swp

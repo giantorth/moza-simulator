@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Block until the MOZA wheelbase answers a NATIVE serial probe, so SimHub is
+never launched into a cold/half-enumerated base.
+
+Why this exists: under Wine, opening the base's CDC-ACM port with CreateFile
+SUCCEEDS, but the first comm-config IOCTL (GetCommState/SetCommState/SetupComm)
+to a not-yet-fully-enumerated endpoint BLOCKS FOREVER — deadlocking the whole
+SimHub process and the wineserver (no segfault, so nothing in the Wine log).
+A native Linux open + termios + probe does NOT deadlock (the tty layer returns),
+so we use it as a crash-safe readiness gate: once the base replies to the base
+probe (group 0xAB), the subsequent Wine open is safe.
+
+Selects the base by USB identity via /dev/serial/by-id (so an unrelated CDC
+device — e.g. a phone/tablet — is never opened). Fully non-blocking I/O with
+timeouts; can never hang. Exit 0 = ready (or no base present to gate); 1 =
+timed out (caller should proceed best-effort).
+"""
+import sys, os, glob, time, termios, select
+
+# Base probe frame (raw wire bytes) + expected response group — mirrors
+# Protocol/SerialProbeCore.cs (Base: grp 0x2B dev 0x13 cmd 2; resp grp 0xAB).
+BASE_PROBE = bytes([0x7E, 0x03, 0x2B, 0x13, 0x02, 0x00, 0x00, 0xCE])
+BASE_RESP_GROUP = 0xAB
+MSG_START = 0x7E
+
+BY_ID_DIR = "/dev/serial/by-id"
+NAME_HINTS = ("gudsen", "moza")
+DATA_IFACE = "-if00"
+
+READY_TIMEOUT = float(os.environ.get("MOZA_WAIT_TIMEOUT", "75"))
+NOBASE_GRACE = float(os.environ.get("MOZA_WAIT_NOBASE_GRACE", "6"))
+
+
+def find_base_dev():
+    """Return the /dev/ttyACMx for the MOZA base data interface, or None."""
+    try:
+        links = sorted(glob.glob(os.path.join(BY_ID_DIR, "*")))
+    except OSError:
+        return None
+    for link in links:
+        name = os.path.basename(link).lower()
+        if not name.endswith(DATA_IFACE):
+            continue
+        if any(h in name for h in NAME_HINTS):
+            try:
+                return os.path.realpath(link)
+            except OSError:
+                pass
+    return None
+
+
+def probe_once(dev):
+    """Native open + base probe. True if the base replies with group 0xAB.
+    Non-blocking throughout — cannot hang."""
+    try:
+        fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        a = termios.tcgetattr(fd)
+        a[0] = 0; a[1] = 0; a[3] = 0
+        a[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        a[6][termios.VMIN] = 0; a[6][termios.VTIME] = 0
+        a[4] = a[5] = termios.B115200
+        termios.tcsetattr(fd, termios.TCSANOW, a)
+        termios.tcflush(fd, termios.TCIOFLUSH)
+        acc = bytearray()
+        end = time.time() + 0.8
+        nxt = 0.0
+        while time.time() < end:
+            now = time.time()
+            if now >= nxt:
+                try:
+                    os.write(fd, BASE_PROBE)
+                except OSError:
+                    return False
+                nxt = now + 0.2
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                try:
+                    acc.extend(os.read(fd, 4096))
+                except (BlockingIOError, OSError):
+                    pass
+                for i in range(len(acc) - 2):
+                    if acc[i] == MSG_START and acc[i + 2] == BASE_RESP_GROUP:
+                        return True
+        return False
+    except (OSError, termios.error):
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def main():
+    start = time.time()
+    seen_base = False
+    while True:
+        dev = find_base_dev()
+        if dev:
+            seen_base = True
+            if probe_once(dev):
+                print(f"moza-wait-ready: base responsive at {dev} "
+                      f"({time.time() - start:.1f}s)")
+                return 0
+        elif not seen_base and (time.time() - start) >= NOBASE_GRACE:
+            print("moza-wait-ready: no MOZA base in /dev/serial/by-id — proceeding")
+            return 0
+        if (time.time() - start) >= READY_TIMEOUT:
+            print(f"moza-wait-ready: TIMEOUT after {READY_TIMEOUT:.0f}s "
+                  f"(base seen={seen_base}) — proceeding anyway")
+            return 1
+        time.sleep(0.5)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

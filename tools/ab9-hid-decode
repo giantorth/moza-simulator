@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""ab9-hid-decode — decode AB9 HID gear-state reports from a USB capture.
+
+The real AB9 (USB 0x346e:0x1000) streams 34-byte HID gear-state reports on its
+interrupt-IN endpoint EP 0x83. This tool extracts them from a pcapng via tshark,
+maps the per-gear button bits, and prints the time-ordered gear timeline. It's
+how sim/ab9_sim.py::AB9_GEAR_BITS (the bit->gear map the sim replays) was RE'd;
+re-run it on a 7-speed / reverse capture to confirm the inferred 7 and R bits.
+
+Usage:
+    tools/ab9-hid-decode <capture.pcapng>            # gear timeline + summary
+    tools/ab9-hid-decode <capture.pcapng> --raw      # also dump distinct reports
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sim"))
+from ab9_sim import AB9_GEAR_BITS  # noqa: E402
+
+# reverse map: (byte17 gear-mask, byte18) -> gear label
+_REV = {(b17, b18): g for g, (b17, b18) in AB9_GEAR_BITS.items()}
+
+
+def _tshark(cap, fields_filter, fields):
+    cmd = ["tshark", "-r", cap, "-Y", fields_filter, "-T", "fields"]
+    for f in fields:
+        cmd += ["-e", f]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.stdout
+
+
+def _find_ab9_addr(cap):
+    out = _tshark(cap, "usb.idVendor==0x346e && usb.idProduct==0x1000",
+                  ["usb.device_address"])
+    for line in out.splitlines():
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def _gear_of(report_hex):
+    """Map a 34-byte report hex to a gear label (or 'unknown:<bits>')."""
+    b = bytes.fromhex(report_hex)
+    if len(b) < 19:
+        return None
+    b17 = b[17] & ~0x08          # strip the always-set hat/centre bit
+    b18 = b[18]
+    g = _REV.get((b17, b18))
+    if g is not None:
+        return g
+    return f"unknown(b17={b[17]:#04x} b18={b18:#04x})"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("capture")
+    ap.add_argument("--raw", action="store_true", help="dump distinct reports too")
+    args = ap.parse_args()
+
+    addr = _find_ab9_addr(args.capture)
+    if not addr:
+        print(f"no AB9 (0x346e:0x1000) device in {args.capture}", file=sys.stderr)
+        return 1
+    print(f"AB9 at device_address {addr}")
+
+    out = _tshark(args.capture, f"usb.device_address=={addr} && usb.data_len==34",
+                  ["frame.time_relative", "usbhid.data"])
+    rows = [l.split("\t") for l in out.splitlines() if "\t" in l]
+    rows = [r for r in rows if len(r) == 2 and len(r[1]) >= 38]  # drop empty/short
+    if not rows:
+        print("no 34-byte HID reports found", file=sys.stderr)
+        return 1
+
+    print(f"\n{len(rows)} gear-state reports; timeline (gear changes only):")
+    prev = None
+    counts = {}
+    for ts, data in rows:
+        g = _gear_of(data)
+        counts[g] = counts.get(g, 0) + 1
+        if g != prev:
+            print(f"  {float(ts):8.2f}s  gear={g}")
+            prev = g
+
+    print("\nper-gear report counts:")
+    for g, n in sorted(counts.items(), key=lambda x: -x[1]):
+        print(f"  {g:<28} {n}")
+
+    if args.raw:
+        print("\ndistinct raw reports:")
+        seen = {}
+        for _, data in rows:
+            seen[data] = seen.get(data, 0) + 1
+        for data, n in sorted(seen.items(), key=lambda x: -x[1]):
+            print(f"  {n:6}  {data}  -> {_gear_of(data)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

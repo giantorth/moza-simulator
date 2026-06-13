@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "wheel-sim-pithouse": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/wheel_sim.py", "--mcp", "/dev/ttyGS0"],
+      "cwd": "."
+    },
+    "wheel-sim-simhub": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/wheel_sim.py", "--mcp", "/dev/tnt0"],
+      "cwd": "."
+    },
+    "simhub-control": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/simhub_mcp.py"],
+      "cwd": "."
+    },
+    "bridge-real-wheel-to-pithouse": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/bridge.py", "--mcp", "/dev/ttyACM0", "/dev/ttyGS0"],
+      "cwd": "."
+    },
+    "ab9-sim-pithouse": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/ab9_sim.py", "--mcp", "/dev/ttyGS1"],
+      "cwd": "."
+    },
+    "moza-rig": {
+      "command": ".venv/bin/python3",
+      "args": ["sim/rig_mcp_server.py"],
+      "cwd": "."
+    }
+  }
+}

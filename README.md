@@ -6,8 +6,8 @@ Pit House** app and **SimHub** plugins talk to it as if it were real hardware â€
 over a Linux USB gadget â€” so you can develop, regression-test, and capture
 protocol traffic without owning every wheel, dash, pedal set, and shifter.
 
-It was extracted from the [moza-simhub-plugin](https://github.com/giantorth/moza-simhub-plugin)
-project, where it grew into a full multi-device rig.
+It was extracted from the [AZOM](https://github.com/giantorth/AZOM) MOZA SimHub
+plugin project, where it grew into a full multi-device rig.
 
 ## What it simulates
 
@@ -89,7 +89,7 @@ and `sim/golden/*.jsonl` baselines let most of the simulator run without them.
 
 ## Status & origin
 
-Extracted from `moza-simhub-plugin`. The MOZA serial protocol was
+Extracted from the [AZOM](https://github.com/giantorth/AZOM) SimHub plugin. The MOZA serial protocol was
 reverse-engineered with reference to the
 [boxflat](https://github.com/Lawstorant/boxflat) project; the wire-level
 findings live under `docs/protocol/`.

@@ -376,5 +376,47 @@ def bridge_log_path() -> dict:
     return {"path": str(p), "size": size}
 
 
+# ── Injection + rules ───────────────────────────────────────────────────────
+
+@_server.tool()
+def bridge_inject(direction: str, frame_hex: str = "", group: Optional[int] = None,
+                  device: Optional[int] = None, payload_hex: str = "") -> dict:
+    """Send one frame into the conversation. direction "h2b" sends it to the
+    device as if Pit House had (test a command); "b2h" sends it to Pit House
+    as if the device had (test how Pit House reacts). Give a decoded frame as
+    frame_hex ("7e 03 26 1d 0d 00 00", checksum optional — rebuilt), or group
+    + device + payload_hex. Logged as inj-h2b / inj-b2h."""
+    engine = get_engine()
+    if not engine.is_running():
+        return _no_engine()
+    return engine.inject(direction, frame_hex=frame_hex, group=group,
+                         device=device, payload_hex=payload_hex)
+
+
+@_server.tool()
+def bridge_rule_add(direction: str, action: str, group: Optional[int] = None,
+                    device: Optional[int] = None, payload_prefix: str = "",
+                    replace_payload: str = "") -> dict:
+    """Drop or rewrite frames in flight. Matches direction (h2b/b2h), optional
+    group / device ids, and an optional payload hex prefix. action "drop"
+    swallows the frame; "replace" swaps its payload for replace_payload
+    (checksum rebuilt). Originals are logged as <dir>-dropped / <dir>-orig."""
+    return get_engine().rules.add(direction, action, group=group, device=device,
+                                  payload_prefix=payload_prefix,
+                                  replace_payload=replace_payload)
+
+
+@_server.tool()
+def bridge_rules() -> list:
+    """Active rules with their hit counts."""
+    return get_engine().rules.list()
+
+
+@_server.tool()
+def bridge_rule_remove(rule_id: Optional[int] = None) -> dict:
+    """Remove one rule by id, or all rules when rule_id is omitted."""
+    return {"removed": get_engine().rules.remove(rule_id)}
+
+
 def run_stdio() -> None:
     _server.run(transport="stdio")

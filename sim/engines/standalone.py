@@ -147,23 +147,32 @@ class StandaloneSimulator:
         import serial  # type: ignore
         from wheel_sim import read_one_frame, MSG_START
 
-        ser = serial.Serial(port, baudrate=115200, timeout=None)
+        # Short timeout so an engine with a poll() (frames it sends unprompted,
+        # e.g. the mBooster firmware heartbeat) gets serviced between reads.
+        ser = serial.Serial(port, baudrate=115200, timeout=0.05)
         print(f"[{type(self).__name__} on {port} — "
               f"{self.profile.friendly} pid=0x{self.profile.gadgets[0].pid:04x}]",
               file=sys.stderr)
+        poll = getattr(self, "poll", None)
+
+        def send(rsp: bytes) -> None:
+            # Stuff: keep the leading 0x7E + length byte, double any 0x7E
+            # in the body (group/device/payload/checksum).
+            body = bytearray(rsp[:2])
+            for b in rsp[2:]:
+                body.append(b)
+                if b == MSG_START:
+                    body.append(MSG_START)
+            ser.write(bytes(body))
+
         while True:
             frame = read_one_frame(ser)
-            if not frame:
-                continue
-            for rsp in self.handle(frame):
-                # Stuff: keep the leading 0x7E + length byte, double any 0x7E
-                # in the body (group/device/payload/checksum).
-                body = bytearray(rsp[:2])
-                for b in rsp[2:]:
-                    body.append(b)
-                    if b == MSG_START:
-                        body.append(MSG_START)
-                ser.write(bytes(body))
+            if frame:
+                for rsp in self.handle(frame):
+                    send(rsp)
+            if poll is not None:
+                for rsp in poll():
+                    send(rsp)
 
     # ── bookkeeping ──────────────────────────────────────────────────────
     def _record(self, tag: str, frame: bytes) -> None:
@@ -179,28 +188,15 @@ class StandaloneSimulator:
         self.recent_frames.append(('unhandled', frame.hex()))
 
 
-class MBoosterSimulator(StandaloneSimulator):
-    """MOZA mBooster vibration pedal (PID 0x0008, device byte 0x12).
-
-    Wire reference: docs/protocol/devices/mbooster.md. The plugin streams motor
-    writes (group 0x24 cmd 0xb1) at ~50 Hz plus a ~500 ms keepalive; both must be
-    absorbed/acked or PitHouse/the plugin retransmits. Settings (group 0x23 read /
-    0x24 write, cmds 1-29) are the experimental calibration surface — echoed.
-
-    No real capture exists for mBooster, so identity bytes are spec-derived
-    placeholders; confirm against a real diagnostics bundle when available."""
-
-    MOTOR_GROUP = 0x24
-    MOTOR_CMD = 0xb1
-    DEVICE = 0x12
-
-    def _device_specific(self, frame, group, device, payload):
-        # Motor write (group 0x24 cmd 0xb1) — absorb; real motor sends no reply.
-        if (device == self.DEVICE and group == self.MOTOR_GROUP
-                and payload[:1] == bytes([self.MOTOR_CMD])):
-            self._record('mbooster_motor', frame)
-            return []
-        return None
+# The mBooster lane (host + chained units, seeded from a real bundle) lives in
+# engines/mbooster.py, which subclasses StandaloneSimulator — resolved lazily
+# so `from engines.standalone import MBoosterSimulator` keeps working without
+# an import cycle.
+def __getattr__(name):
+    if name == "MBoosterSimulator":
+        from engines.mbooster import MBoosterSimulator
+        return MBoosterSimulator
+    raise AttributeError(name)
 
 
 class Cm1Simulator(StandaloneSimulator):
@@ -257,6 +253,7 @@ def _self_test() -> int:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from profiles.standalone.mbooster import PROFILE
 
+    from engines.mbooster import MBoosterSimulator
     sim = MBoosterSimulator(PROFILE)
     ok = True
 
@@ -273,17 +270,24 @@ def _self_test() -> int:
     # Heartbeat / keepalive (group 0x00 dev 0x12) -> 0x80 presence ack.
     ack = build_frame(0x80, swap_nibbles(0x12), b'').hex()
     check(sim, "keepalive 7e000012 -> presence ack", "7e 00 00 12 9d", [ack])
-    # Motor writes (group 0x24 cmd 0xb1) -> absorbed (no reply).
-    check(sim, "motor ABS on (0xb1)", "7e 09 24 12 b1 01 01 00 5a 1c 28 08 e8 0b", [])
-    check(sim, "motor ABS off (0xb1)", "7e 09 24 12 b1 01 00 00 00 00 00 00 00 7c", [])
-    check(sim, "motor Engine on (0xb1)", "7e 09 24 12 b1 04 01 00 64 0c cc 02 0c ca", [])
+    # Motor writes (group 0x24 cmd 0xb1) -> echoed, as real units do
+    # (JCJ5AEA2: 12 sent, 12 echoed).
+    for desc, hx in (("motor ABS on (0xb1)", "7e 09 24 12 b1 01 01 00 5a 1c 28 08 e8 0b"),
+                     ("motor ABS off (0xb1)", "7e 09 24 12 b1 01 00 00 00 00 00 00 00 7c")):
+        f = bytes.fromhex(hx.replace(" ", ""))
+        check(sim, desc, hx, [build_frame(0xA4, 0x21, frame_payload(f)).hex()])
     # Settings write (group 0x24, cmd != 0xb1) -> echoed; then read (0x23) returns it.
     w = build_frame(0x24, 0x12, b'\x02\x34\x12')          # throttle-min = 0x1234
     we = build_frame(0xA4, 0x21, b'\x02\x34\x12').hex()   # echo (group|0x80, swap dev)
     check(sim, "settings write cmd 0x02 -> echo", w.hex(), [we])
-    r = build_frame(0x23, 0x12, b'\x02')                  # read throttle-min
+    r = build_frame(0x23, 0x12, b'\x02\x00\x00')          # read throttle-min
     re_ = build_frame(0xA3, 0x21, b'\x02\x34\x12').hex()  # returns stored value
     check(sim, "settings read cmd 0x02 -> stored value", r.hex(), [re_])
+    # Seeded register (brake-min = 0 on the Pit House-captured unit) and a selector command.
+    check(sim, "seeded brake-min", build_frame(0x23, 0x12, b'\x05\x00\x00').hex(),
+          [build_frame(0xA3, 0x21, b"\x05\x00\x00").hex()])
+    check(sim, "seeded deadzone (0xab 00 07)", build_frame(0x23, 0x12, b'\xab\x00\x07\x00\x00').hex(),
+          [build_frame(0xA3, 0x21, b"\xab\x00\x07\x0e\x13").hex()])
 
     # ── Handbrake (StandaloneSimulator, dev 0x1B, partial identity) ──────
     from profiles.standalone.handbrake import PROFILE as HB

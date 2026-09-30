@@ -13,13 +13,25 @@ real base on /dev/ttyACMx, and vice versa. A JSONL log records each parsed
 frame with timestamp + direction so the conversation can be replayed or
 diffed against captures.
 
+The host side can also be one end of a tty0tty pair (/dev/tntN) — Pit House
+running under Wine on the other end (see pithouse_wine.py) — and the device side
+can be an in-process sim engine instead of hardware: `sim:<profile-key>`
+(standalone engines only, e.g. `sim:mbooster`).
+
+Forwarding is frame-level: each side's bytes are split into MOZA frames and
+re-sent whole, so frames injected with inject() (or the bridge_inject MCP tool)
+can never land in the middle of a real one, and rules can drop or rewrite
+matching frames in flight.
+
 Usage:
     sudo bash sim/setup_usbip_gadget.sh                # build gadget + start usbipd
     python3 sim/bridge.py /dev/ttyACM0 /dev/ttyGS0     # CLI mode
+    python3 sim/bridge.py /dev/ttyACM1 /dev/tnt0       # Pit House under Wine on /dev/tnt1
+    python3 sim/bridge.py sim:mbooster /dev/tnt0       # Pit House against the mBooster sim
     python3 sim/bridge.py --mcp                        # MCP stdio server
 
-The first port is the real base (host-side CDC ACM); the second is the
-gadget endpoint that Windows sees. Default log path is sim/logs/bridge-<ts>.jsonl;
+The first port is the device side (real base CDC ACM or sim:<key>); the second
+is the host side Pit House opens. Default log path is sim/logs/bridge-<ts>.jsonl;
 override with --log.
 """
 from __future__ import annotations
@@ -40,16 +52,102 @@ sys.path.insert(0, str(Path(__file__).parent))
 from wheel_sim import MSG_START, verify, frame_payload  # type: ignore
 
 import serial  # type: ignore
+from wheel_sim import build_frame  # type: ignore
 
 
 HOST_TO_BASE = "h2b"   # PitHouse → real base
 BASE_TO_HOST = "b2h"   # real base → PitHouse
+SIM_PREFIX = "sim:"
 
 _RECENT_CAP = 2000     # ring buffer size for bridge_recent MCP tool
 
 
-def _open_serial(path: str, baud: int) -> serial.Serial:
+def _open_serial(path: str, baud: int):
+    if path.startswith(SIM_PREFIX):
+        return EngineEndpoint.for_profile(path[len(SIM_PREFIX):])
     return serial.Serial(path, baudrate=baud, timeout=0.0, write_timeout=1.0)
+
+
+def _port_exists(path: Optional[str]) -> bool:
+    return bool(path) and (path.startswith(SIM_PREFIX) or os.path.exists(path))
+
+
+def stuff_frame(frame: bytes) -> bytes:
+    """Decoded frame -> wire bytes: keep 7E + N, double every 0x7E after them."""
+    out = bytearray(frame[:2])
+    for b in frame[2:]:
+        out.append(b)
+        if b == MSG_START:
+            out.append(MSG_START)
+    return bytes(out)
+
+
+class EngineEndpoint:
+    """A sim engine dressed as the device-side serial port. write() takes wire
+    bytes from the host, runs each frame through engine.handle(), and queues
+    the stuffed responses for read(). An engine with a poll() method (frames it
+    sends unprompted, e.g. a firmware heartbeat) is polled on every read.
+    Survives the supervisor's reopen cycle: close() is a no-op and the same
+    instance is handed back, so engine state outlives a host-side reconnect."""
+
+    _cache: dict = {}
+
+    def __init__(self, key: str, engine) -> None:
+        self.key = key
+        self.engine = engine
+        self.timeout = 0.05
+        self._splitter = FrameSplitter()
+        self._out = bytearray()
+        self._cv = threading.Condition()
+
+    @classmethod
+    def for_profile(cls, key: str) -> "EngineEndpoint":
+        if key in cls._cache:
+            return cls._cache[key]
+        import wheel_sim as ws  # type: ignore
+        from engines.standalone import (StandaloneSimulator, MBoosterSimulator,  # type: ignore
+                                        Cm1Simulator)
+        prof = ws.DEVICE_PROFILES.get(key)
+        if prof is None or not prof.gadgets:
+            raise serial.SerialException(f"unknown sim profile '{key}'")
+        kind = prof.gadgets[0].engine
+        engine_cls = {"mbooster": MBoosterSimulator, "cm1": Cm1Simulator,
+                      "standalone": StandaloneSimulator}.get(kind)
+        if engine_cls is None:
+            raise serial.SerialException(
+                f"sim profile '{key}' uses engine '{kind}', which runs as its own process")
+        ep = cls(key, engine_cls(prof))
+        cls._cache[key] = ep
+        return ep
+
+    def write(self, data: bytes) -> int:
+        replies = []
+        for frame in self._splitter.feed(data):
+            replies.extend(self.engine.handle(frame))
+        if replies:
+            with self._cv:
+                for r in replies:
+                    self._out.extend(stuff_frame(r))
+                self._cv.notify_all()
+        return len(data)
+
+    def read(self, n: int) -> bytes:
+        poll = getattr(self.engine, "poll", None)
+        if poll is not None:
+            spontaneous = poll()
+            if spontaneous:
+                with self._cv:
+                    for r in spontaneous:
+                        self._out.extend(stuff_frame(r))
+        with self._cv:
+            if not self._out:
+                self._cv.wait(self.timeout or 0.05)
+            chunk = bytes(self._out[:n])
+            del self._out[:n]
+            return chunk
+
+    def close(self) -> None:
+        pass
 
 
 class FrameSplitter:
@@ -79,10 +177,11 @@ class FrameSplitter:
             if len(self._buf) < 2:
                 break
             n = self._buf[1]
-            # Frame-format.md: N is 1..64. 0x7E in particular cannot be a real
-            # length — that's two adjacent 7Es from a frame boundary, not a
-            # length byte. Slip past this 7E and resync.
-            if n < 1 or n > 64:
+            # N is 0..64 — 0 is the bare keepalive `7e 00 00 <dev> <ck>`.
+            # 0x7E in particular cannot be a real length — that's two adjacent
+            # 7Es from a frame boundary, not a length byte. Slip past this 7E
+            # and resync.
+            if n > 64:
                 del self._buf[:1]
                 continue
             need = n + 3  # group + device + payload(n) + checksum (decoded)
@@ -226,19 +325,84 @@ class BridgeLogger:
             pass
 
 
+class Rules:
+    """In-flight frame rules. Each rule matches a direction, group, device and
+    an optional payload hex prefix, and either drops the frame or replaces its
+    payload (checksum rebuilt). First matching rule wins."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rules: list = []
+        self._next_id = 1
+
+    def add(self, direction: str, action: str, group: Optional[int] = None,
+            device: Optional[int] = None, payload_prefix: str = "",
+            replace_payload: str = "") -> dict:
+        if direction not in (HOST_TO_BASE, BASE_TO_HOST):
+            return {"error": f"direction must be {HOST_TO_BASE} or {BASE_TO_HOST}"}
+        if action not in ("drop", "replace"):
+            return {"error": "action must be drop or replace"}
+        if action == "replace":
+            bytes.fromhex(replace_payload)
+        rule = {"id": self._next_id, "dir": direction, "action": action,
+                "grp": group, "dev": device,
+                "prefix": payload_prefix.replace(" ", "").lower(),
+                "replace": replace_payload.replace(" ", "").lower(), "hits": 0}
+        with self._lock:
+            self._rules.append(rule)
+            self._next_id += 1
+        return dict(rule)
+
+    def remove(self, rule_id: Optional[int] = None) -> int:
+        with self._lock:
+            before = len(self._rules)
+            self._rules = [] if rule_id is None else [r for r in self._rules if r["id"] != rule_id]
+            return before - len(self._rules)
+
+    def list(self) -> list:
+        with self._lock:
+            return [dict(r) for r in self._rules]
+
+    def apply(self, direction: str, frame: bytes) -> Optional[bytes]:
+        """Frame to forward (possibly rewritten), or None to drop it."""
+        if len(frame) < 5:
+            return frame
+        with self._lock:
+            if not self._rules:
+                return frame
+            payload = frame_payload(frame).hex()
+            for r in self._rules:
+                if r["dir"] != direction:
+                    continue
+                if r["grp"] is not None and r["grp"] != frame[2]:
+                    continue
+                if r["dev"] is not None and r["dev"] != frame[3]:
+                    continue
+                if not payload.startswith(r["prefix"]):
+                    continue
+                r["hits"] += 1
+                if r["action"] == "drop":
+                    return None
+                return build_frame(frame[2], frame[3], bytes.fromhex(r["replace"]))
+        return frame
+
+
 class Pump(threading.Thread):
-    """One direction of the byte pump. Reads from `src`, writes to `dst`,
-    feeds a FrameSplitter for logging. Stops when the stop event fires or
-    either port goes EBADF."""
+    """One direction of the frame pump. Reads from `src`, splits the stream
+    into frames, applies the rules, and writes each surviving frame to `dst`
+    whole, under `dst`'s write lock (shared with inject()). Stops when the stop
+    event fires or either port goes EBADF."""
 
     def __init__(
         self,
         name: str,
         direction: str,
-        src: serial.Serial,
-        dst: serial.Serial,
+        src,
+        dst,
         logger: BridgeLogger,
         stop: threading.Event,
+        rules: "Rules",
+        dst_lock: threading.Lock,
     ) -> None:
         super().__init__(name=name, daemon=True)
         self.direction = direction
@@ -246,6 +410,8 @@ class Pump(threading.Thread):
         self.dst = dst
         self.logger = logger
         self.stop = stop
+        self.rules = rules
+        self.dst_lock = dst_lock
         self.splitter = FrameSplitter()
 
     def run(self) -> None:
@@ -263,15 +429,28 @@ class Pump(threading.Thread):
                 return
             if not chunk:
                 continue
-            try:
-                self.dst.write(chunk)
-            except serial.SerialException as e:
-                print(f"[{self.name}] write error: {e}", file=sys.stderr)
-                self.stop.set()
-                return
             self.logger.add_bytes(self.direction, len(chunk))
             for frame in self.splitter.feed(chunk):
-                self.logger.log(self.direction, frame)
+                out = self.rules.apply(self.direction, frame)
+                if out is None:
+                    self.logger.log(self.direction + "-dropped", frame)
+                    continue
+                if out is not frame:
+                    self.logger.log(self.direction + "-orig", frame)
+                try:
+                    with self.dst_lock:
+                        self.dst.write(stuff_frame(out))
+                except serial.SerialTimeoutException:
+                    # Nobody reading the other end yet (a tty0tty pair whose
+                    # peer isn't open blocks once its buffer fills) — not a
+                    # dead port, so keep pumping.
+                    self.logger.log(self.direction + "-undelivered", out)
+                    continue
+                except serial.SerialException as e:
+                    print(f"[{self.name}] write error: {e}", file=sys.stderr)
+                    self.stop.set()
+                    return
+                self.logger.log(self.direction, out)
 
 
 class BridgeEngine:
@@ -301,6 +480,9 @@ class BridgeEngine:
         self._supervisor: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self.reconnect_count: int = 0
+        self.rules = Rules()
+        self._base_wlock = threading.Lock()
+        self._gadget_wlock = threading.Lock()
 
     def is_running(self) -> bool:
         return self._supervisor is not None and self._supervisor.is_alive() and not self._user_stop.is_set()
@@ -315,7 +497,7 @@ class BridgeEngine:
             if base_port == gadget_port:
                 return {"error": "base_port and gadget_port must differ"}
             for p in (base_port, gadget_port):
-                if not os.path.exists(p):
+                if not _port_exists(p):
                     return {"error": f"port not found: {p}"}
             log_path = log_path or _default_log_path()
             try:
@@ -348,8 +530,10 @@ class BridgeEngine:
         while not self._user_stop.is_set():
             self._pump_stop = threading.Event()
             pumps = [
-                Pump("h→b", HOST_TO_BASE, self._gadget, self._base, self.logger, self._pump_stop),
-                Pump("b→h", BASE_TO_HOST, self._base, self._gadget, self.logger, self._pump_stop),
+                Pump("h→b", HOST_TO_BASE, self._gadget, self._base, self.logger,
+                     self._pump_stop, self.rules, self._base_wlock),
+                Pump("b→h", BASE_TO_HOST, self._base, self._gadget, self.logger,
+                     self._pump_stop, self.rules, self._gadget_wlock),
             ]
             self._pumps = pumps
             for p in pumps:
@@ -377,8 +561,7 @@ class BridgeEngine:
             attempt = 0
             while not self._user_stop.is_set():
                 # Wait for ports to exist (USBIP gadget may take a moment to re-bind).
-                if not (self.base_port and os.path.exists(self.base_port)
-                        and self.gadget_port and os.path.exists(self.gadget_port)):
+                if not (_port_exists(self.base_port) and _port_exists(self.gadget_port)):
                     self._user_stop.wait(0.5)
                     continue
                 try:
@@ -422,6 +605,39 @@ class BridgeEngine:
                 self.logger.close()
             return {"status": "stopped", "log_path": log_path, **snap}
 
+    def inject(self, direction: str, frame_hex: str = "", group: Optional[int] = None,
+               device: Optional[int] = None, payload_hex: str = "") -> dict:
+        """Send a frame to one side as if the other side had sent it.
+        h2b = to the device (as Pit House), b2h = to Pit House (as the device).
+        Either a complete decoded frame (frame_hex, checksum optional — it is
+        rebuilt) or group + device + payload_hex."""
+        if direction not in (HOST_TO_BASE, BASE_TO_HOST):
+            return {"error": f"direction must be {HOST_TO_BASE} or {BASE_TO_HOST}"}
+        try:
+            if frame_hex:
+                raw = bytes.fromhex(frame_hex.replace(" ", ""))
+                if len(raw) < 4 or raw[0] != MSG_START:
+                    return {"error": "frame_hex must start 7e <n> <grp> <dev>"}
+                n = raw[1]
+                frame = build_frame(raw[2], raw[3], raw[4:4 + n])
+            else:
+                if group is None or device is None:
+                    return {"error": "give frame_hex, or group + device + payload_hex"}
+                frame = build_frame(group, device, bytes.fromhex(payload_hex.replace(" ", "")))
+        except ValueError as e:
+            return {"error": f"bad hex: {e}"}
+        dst = self._base if direction == HOST_TO_BASE else self._gadget
+        lock = self._base_wlock if direction == HOST_TO_BASE else self._gadget_wlock
+        if dst is None or self.logger is None:
+            return {"error": "bridge not running (or reconnecting)"}
+        try:
+            with lock:
+                dst.write(stuff_frame(frame))
+        except (serial.SerialException, OSError) as e:
+            return {"error": f"write failed: {e}"}
+        self.logger.log("inj-" + direction, frame)
+        return {"sent": frame.hex(), "dir": direction}
+
     def status(self) -> dict:
         out = {
             "running": self.is_running(),
@@ -445,6 +661,46 @@ def get_engine() -> BridgeEngine:
     return _engine_singleton
 
 
+def serve_control(engine: BridgeEngine, path: Path) -> None:
+    """JSON-lines control socket for a CLI bridge — bridge_ctl.py talks to it.
+    One request per line, one JSON reply per line. Ops: status, recent, inject,
+    rule_add, rules, rule_remove."""
+    import socketserver
+
+    def dispatch(req: dict):
+        op = req.pop("op", "")
+        if op == "status":
+            return engine.status()
+        if op == "recent":
+            if engine.logger is None:
+                return {"error": "not running"}
+            return [{"t": t, "dir": d, "hex": h} for t, d, h in
+                    engine.logger.recent_snapshot(int(req.get("count", 20)), req.get("dir"))]
+        if op == "inject":
+            return engine.inject(**req)
+        if op == "rule_add":
+            return engine.rules.add(**req)
+        if op == "rules":
+            return engine.rules.list()
+        if op == "rule_remove":
+            return {"removed": engine.rules.remove(req.get("rule_id"))}
+        return {"error": f"unknown op '{op}'"}
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            for line in self.rfile:
+                try:
+                    reply = dispatch(json.loads(line))
+                except Exception as e:  # report, keep serving
+                    reply = {"error": f"{type(e).__name__}: {e}"}
+                self.wfile.write((json.dumps(reply) + "\n").encode("utf-8"))
+
+    if path.exists():
+        path.unlink()
+    server = socketserver.ThreadingUnixStreamServer(str(path), Handler)
+    threading.Thread(target=server.serve_forever, name="bridge-ctl", daemon=True).start()
+
+
 def _default_log_path() -> Path:
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     return Path(__file__).parent / "logs" / f"bridge-{ts}.jsonl"
@@ -453,7 +709,7 @@ def _default_log_path() -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument("base_port", nargs="?",
-                    help="Real MOZA base CDC ACM device, e.g. /dev/ttyACM0")
+                    help="Device side: real CDC ACM (/dev/ttyACM0) or sim:<profile-key>")
     ap.add_argument("gadget_port", nargs="?", default="/dev/ttyGS0",
                     help="libcomposite gadget endpoint (default /dev/ttyGS0)")
     ap.add_argument("--baud", type=int, default=115200)
@@ -463,6 +719,8 @@ def main() -> int:
                     help="Suppress periodic stats line on stdout")
     ap.add_argument("--mcp", action="store_true",
                     help="Run as MCP server (stdio transport); ports become bridge_start args")
+    ap.add_argument("--control", type=Path, default=Path("/tmp/moza-bridge.sock"),
+                    help="Unix control socket for bridge_ctl.py (default /tmp/moza-bridge.sock)")
     args = ap.parse_args()
 
     if args.mcp:
@@ -489,6 +747,8 @@ def main() -> int:
         print(f"start failed: {res['error']}", file=sys.stderr)
         return 1
     print(f"bridge: {res['base_port']} ↔ {res['gadget_port']}  log → {res['log_path']}")
+    serve_control(engine, args.control)
+    print(f"control socket: {args.control}")
 
     def _sig(_signum, _frame):
         engine._user_stop.set()

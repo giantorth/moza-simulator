@@ -517,6 +517,20 @@ class Ab9Simulator:
         frame so the plugin's response parser latches AB9 detection even on
         the first read sweep.
         """
+        # PitHouse sends a 2-byte-payload write `<cmd> <value>` for the AB9
+        # online/mode toggle — observed as `7E 02 1F 12 5D <00|01>` when the
+        # user switches the shifter between shifter and flight-sim mode. This
+        # is NOT the plugin's 3-byte `<cmd_hi> <cmd_lo> <value>` slider form
+        # (the SimHub plugin only ever emits 3-byte reads/writes via
+        # BuildReadMessage), so it has its own branch. Real device acks group
+        # 0x1F writes with the bare `7E 00 9F 21 4B` frame and updates state
+        # (see module notes above); we mirror that exactly here.
+        if len(payload) == 2:
+            cmd = payload[0]
+            value = payload[1]
+            self.settings[cmd] = value
+            self._tag(f'write_{cmd:02x}')
+            return [build_frame(GRP_WRITE | 0x80, DEV_AB9_RSP, b'')]
         if len(payload) < 3:
             self._tag('drop:write_short')
             return []

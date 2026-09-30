@@ -101,6 +101,7 @@ class Unit:
     locate_started: float = 0.0
     last_error_report: float = 0.0
     boot_due: bool = False                  # print boot lines once back online
+    sleep_before_cal: Optional[bytes] = None  # 0xB4 reads 0 until the post-cal reboot
 
     def online(self, now: float) -> bool:
         return now >= self.offline_until
@@ -291,6 +292,10 @@ class MBoosterSimulator(StandaloneSimulator):
     def _calibration(self, u: Unit, cmd: int, now: float) -> None:
         if cmd in CAL_START:
             role = CAL_START.index(cmd)
+            # 0xB4 (auto-sleep minutes) read 0 from cal-start to the reboot
+            # in the 2026-09-08 captures.
+            if u.sleep_before_cal is None:
+                u.sleep_before_cal = u.regs.get(b"\xb4", (0).to_bytes(4, "big"))
             u.regs[b"\xb4"] = (0).to_bytes(4, "big")
             if self._channel_for_role(u, role) == MOTOR_CHANNEL:
                 u.cal = {"ok": True, "t0": now, "steps": [
@@ -333,7 +338,9 @@ class MBoosterSimulator(StandaloneSimulator):
         self._log(u.dev, "[INFO]serial_cmd_com.c:262 Software reset")
         u.cal = None
         u.locate_started = 0.0
-        u.regs[b"\xb4"] = (2).to_bytes(4, "big")
+        if u.sleep_before_cal is not None:
+            u.regs[b"\xb4"] = u.sleep_before_cal
+            u.sleep_before_cal = None
         u.offline_until = now + REBOOT_SECONDS
         targets = list(self.units.values()) if u.dev == self.host_dev else [u]
         for t in targets:
@@ -532,6 +539,11 @@ def _self_test() -> int:
     expect("host heartbeat clutch passive", "Clutch pedal is connected, type: passive pedal" in host)
     expect("chained unit prints its own block", any("PD Linked: 1" in x for x in hb.get(0x1D, [])))
 
+    # Auto-sleep (0xB4, minutes): Pit House's 5 h write.
+    sleep300 = b"\xb4\x00\x00\x01\x2c"
+    expect("sleep write echoed", send(0x24, 0x12, sleep300) == [build_frame(0xA4, 0x21, sleep300)])
+    expect("sleep reads back 300", send(0x23, 0x12, b"\xb4\x00\x00\x00\x00") == [build_frame(0xA3, 0x21, sleep300)])
+
     # Brake calibration on the host: sweeps and commits.
     send(0x26, 0x12, bytes([13, 0, 0]))
     lines = _text(sim.poll() + run(10.5)).get(0x12, [])
@@ -540,6 +552,12 @@ def _self_test() -> int:
            all(any(k in x for x in lines) for k in ("Backward", "Forward", "pressure")))
     send(0x26, 0x12, bytes([17, 0, 0]))
     expect("brake cal stop commits", any("Pedal Calib End" in x for x in _text(sim.poll()).get(0x12, [])))
+    expect("sleep reads 0 until the reboot",
+           send(0x23, 0x12, b"\xb4\x00\x00\x00\x00") == [build_frame(0xA3, 0x21, b"\xb4\x00\x00\x00\x00")])
+    send(0x01, 0x12, b"\x02")
+    run(6)
+    expect("reboot restores the sleep timeout",
+           send(0x23, 0x12, b"\xb4\x00\x00\x00\x00") == [build_frame(0xA3, 0x21, sleep300)])
 
     # Throttle calibration to the chained throttle unit, as Pit House sends
     # it: with its map healthy (2/1/3 — throttle on its motor channel B) it

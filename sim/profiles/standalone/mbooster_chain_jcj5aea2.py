@@ -1,6 +1,6 @@
 """mBooster chain in the state bundle JCJ5AEA2 found it: pedal roles swapped.
 
-Same lane as mbooster_chain, seeded from that bundle's AZOM-era traffic. The
+Same lane as mbooster, seeded from that bundle's AZOM-era traffic. The
 chained unit's pedal-role map 0x21/0x22/0x23 reads 1/2/3 (it did from the
 start of that session; what set it is unknown), so Pit House assigns it the
 Brake, the same role as the host — two brakes, no throttle — and a throttle

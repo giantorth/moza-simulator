@@ -495,7 +495,7 @@ def _text(frames: List[bytes]) -> Dict[int, List[str]]:
 
 
 def _self_test() -> int:
-    from profiles.standalone.mbooster_chain import PROFILE
+    from profiles.standalone.mbooster import PROFILE
 
     t = [0.0]
     sim = MBoosterSimulator(PROFILE, clock=lambda: t[0])

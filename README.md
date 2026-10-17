@@ -33,20 +33,27 @@ hardware captures and the protocol reference under `docs/protocol/`.
 python3 -m venv .venv
 .venv/bin/pip install pyserial mcp
 
-# 2. Bring up a USB gadget so Pit House / SimHub see a real MOZA device
-#    (needs root: configfs + dummy_hcd + usbipd)
-sudo bash sim/setup_rig.sh kspro mbooster handbrake     # multi-device rig
-#    or a single wheelbase gadget:
-sudo bash sim/setup_usbip_gadget.sh
+# 2. Local (SimHub / Pit House under Wine on this machine): tty0tty pair, no root
+#    once the module is loaded. Map the prefix's COM40 to /dev/tnt1 (with the
+#    MOZA USB identity Pit House filters on) and run the engine on /dev/tnt0.
+python3 sim/pithouse_wine.py register --dev /dev/tnt1 --com COM40 --pid 0x0008
+python3 sim/gadget_manager.py run mbooster /dev/tnt0     # mBooster lane (brake + chained throttle)
+python3 sim/wheel_sim.py --model kspro /dev/tnt0         # or a wheel
 
-# 3. Run the simulator engine(s) on the printed ttyGS port(s)
-python3 sim/wheel_sim.py --model kspro /dev/ttyGS0       # a wheel
-python3 sim/gadget_manager.py run mbooster /dev/ttyGS1   # a peripheral
+# 3. Remote Windows over usbip: USB gadget per device (needs root: configfs +
+#    dummy_hcd + usbipd). Gadgets are bound to usbipd for export, so they do
+#    NOT show up as a local ttyACM.
+sudo bash sim/setup_rig.sh kspro mbooster handbrake     # multi-device rig
+sudo bash sim/setup_usbip_gadget.sh                     # or a single wheelbase gadget
+python3 sim/gadget_manager.py run mbooster /dev/ttyGS1   # engines on the printed ttyGS ports
 ```
 
-For SimHub plugin development on Linux you can also skip USB and use a tty0tty
-COM pair — see [`sim/README.md`](sim/README.md) and
+tty0tty setup and troubleshooting: [`sim/README.md`](sim/README.md); usbip:
 [`sim/USBIP_SETUP.md`](sim/USBIP_SETUP.md).
+
+mBooster profiles: `mbooster` (host brake + chained throttle + passive clutch),
+`mbooster_single` (one unit, passive throttle and clutch),
+`mbooster_chain_jcj5aea2` (chain with swapped pedal roles).
 
 ## Highlights
 

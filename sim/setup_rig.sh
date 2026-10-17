@@ -11,6 +11,11 @@
 #   python3 sim/gadget_manager.py run handbrake /dev/ttyGS2
 #
 # Tear down with: sudo bash sim/teardown_rig.sh
+#
+# For remote Windows hosts only: gadgets are bound to usbipd for export and get
+# no local ttyACM. For SimHub / Pit House under Wine on this machine, run the
+# engine on a tty0tty pair instead (no root):
+#   python3 sim/gadget_manager.py run mbooster /dev/tnt0   # prefix COM -> /dev/tnt1
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"

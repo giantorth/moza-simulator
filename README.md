@@ -40,6 +40,22 @@ python3 sim/pithouse_wine.py register --dev /dev/tnt1 --com COM40 --pid 0x0008
 python3 sim/gadget_manager.py run mbooster /dev/tnt0     # mBooster lane (brake + chained throttle)
 python3 sim/wheel_sim.py --model kspro /dev/tnt0         # or a wheel
 
+# 2a. SimHub in the linux-simracing-utils prefix (the /deploy target): pass
+#     --prefix, since the default is the Pit House test prefix.
+P=~/linux-simracing-utils/pfx
+python3 sim/pithouse_wine.py --prefix $P register --dev /dev/tnt1 --com COM40 --pid 0x0008
+.venv/bin/python3 sim/gadget_manager.py run mbooster /dev/tnt0 &
+#     Wine builds HARDWARE\DEVICEMAP\SERIALCOMM only at wineserver start, and
+#     the plugin drops COM ports missing from it. After registering, quit
+#     SimHub, restart the Wine session, then relaunch:
+WINEPREFIX=$P ~/linux-simracing-utils/bin/wineserver -k
+setsid ~/linux-simracing-utils/bin/lsu-launch-wrapper \
+  'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\SimHub\SimHub.lnk' &
+#     Check: SimHub.txt logs "Wine registry declares COM40 as MOZA PID 0x0008".
+#     When done: stop the engine and `pithouse_wine.py --prefix $P unregister
+#     --com COM40 --pid 0x0008`. A registered COM40 with no engine behind it crashes
+#     Pit House on launch.
+
 # 3. Remote Windows over usbip: USB gadget per device (needs root: configfs +
 #    dummy_hcd + usbipd). Gadgets are bound to usbipd for export, so they do
 #    NOT show up as a local ttyACM.

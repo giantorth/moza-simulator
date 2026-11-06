@@ -71,6 +71,16 @@ mBooster profiles: `mbooster` (host brake + chained throttle + passive clutch),
 `mbooster_single` (one unit, passive throttle and clutch),
 `mbooster_chain_jcj5aea2` (chain with swapped pedal roles).
 
+### Universal Hub bridge (Windows + Linux)
+
+`sim/hub_bridge.py` presents an emulated **MOZA Universal Hub + KS Pro** as a
+userspace USB/IP device and feeds the KS Pro's buttons/axes from ESP32 button
+boxes (Wi-Fi UDP, firmware in `firmware/esp32_wheel_buttons/`), SDL2 joysticks
+and Linux evdev devices. Runs on Windows (attach with usbip-win2) and Linux
+(attach with `usbip attach`, works for Wine/Proton). Windows users starting
+from scratch: [`docs/windows-setup.md`](docs/windows-setup.md). Technical
+reference: [`docs/hub-bridge.md`](docs/hub-bridge.md).
+
 ## Highlights
 
 - **Profile registry** (`sim/profiles/`) — adding a model is a new file, not new

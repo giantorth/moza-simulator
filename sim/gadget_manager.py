@@ -14,6 +14,8 @@ Engine routing (GadgetSpec.engine):
     unified            -> wheel_sim.py --model <key> <port>   (wheel rig)
     standalone/mbooster-> engines.standalone.{StandaloneSimulator,MBoosterSimulator}
     ab9                -> ab9_sim.py <port>
+    uhub               -> hub_bridge.py (userspace USB/IP device — no configfs
+                          gadget; `spec` refuses it, `run` ignores <port>)
 """
 from __future__ import annotations
 
@@ -48,6 +50,11 @@ def cmd_spec(keys):
     udc = 0
     for key in keys:
         p = _profile(key)
+        if any(g.engine == "uhub" for g in p.gadgets):
+            print(f"profile '{key}' is served by sim/hub_bridge.py over USB/IP, "
+                  f"not a configfs gadget — run: python3 sim/hub_bridge.py",
+                  file=sys.stderr)
+            sys.exit(2)
         # Multiple gadgets if the key repeats in the rig or the profile itself
         # declares more than one gadget (e.g. a future composite).
         multi = total[key] > 1 or len(p.gadgets) > 1
@@ -84,6 +91,9 @@ def cmd_run(key, port):
         cls = {"mbooster": MBoosterSimulator, "cm1": Cm1Simulator}.get(
             engine, StandaloneSimulator)
         cls(p).run_serial(port)
+    elif engine == "uhub":
+        os.execvp(sys.executable, [sys.executable, os.path.join(HERE, "hub_bridge.py"),
+                                   "--model", key])
     elif engine == "ab9":
         os.execvp("python3", ["python3", os.path.join(HERE, "ab9_sim.py"), port])
     else:

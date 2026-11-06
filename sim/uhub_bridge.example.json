@@ -1,0 +1,31 @@
+{
+  "usbip": {
+    "host": "127.0.0.1",
+    "port": 3240
+  },
+  "udp": {
+    "enabled": true,
+    "bind": "0.0.0.0",
+    "port": 34200,
+    "timeout_ms": 500,
+    "allow": [],
+    "devices": {
+      "*": {"button_offset": 0},
+      "0x1a2b3c4d": {"button_offset": 64, "buttons": {"0": 10}, "hat": false}
+    }
+  },
+  "sdl": {
+    "enabled": true,
+    "map_unconfigured": false,
+    "devices": [
+      {
+        "match": "Button Box",
+        "button_offset": 32,
+        "axes": {"0": {"to": 6}, "1": {"to": 7, "invert": true}}
+      }
+    ]
+  },
+  "evdev": {
+    "devices": []
+  }
+}

@@ -65,6 +65,7 @@ MODEL_CAPTURES: Dict[str, List[str]] = {
               "pithouse-switch-list-delete-upload-reupload.pcapng"],
     "kspro": [_COMMON,
               "usb-capture/ksp/putOnWheelAndOpenPitHouse.pcapng"],
+    "kspro_uhub": ["usb-capture/ksp/mozahubstartup.pcapng"],
 }
 
 
@@ -310,6 +311,12 @@ def main() -> int:
     ws.threading.Timer = _NoopTimer  # type: ignore[attr-defined]
     _frozen = 1_700_000_000.0
     ws.time.time = lambda: _frozen  # type: ignore[assignment]
+    # Argument-less gmtime() reads the real clock directly (not via time.time):
+    # it stamps `lastModified` on dashboards uploaded during a capture
+    # (kspro_uhub's mozahubstartup capture uploads one), so freeze it too.
+    _real_gmtime = ws.time.gmtime
+    ws.time.gmtime = lambda secs=None: _real_gmtime(  # type: ignore[assignment]
+        _frozen if secs is None else secs)
 
     global _DB
     _DB = ws.load_telemetry_db()

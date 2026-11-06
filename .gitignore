@@ -30,3 +30,7 @@ usb-capture/**/dash.json
 # Editor / OS
 .DS_Store
 *.swp
+
+# ESP32 firmware local config (Wi-Fi credentials) and build output
+firmware/**/include/config.h
+firmware/**/.pio/

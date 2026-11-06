@@ -578,6 +578,14 @@ def _build_identity_tables(model: dict) -> Tuple[
     pedal_ident = model.get('pedal_identity')
     if pedal_ident:
         device_rsp.update(_build_device_identity(0x19, pedal_ident))
+    # Universal Hub topology: the hub answers on 0x12 with its OWN identity and
+    # there is no wheelbase at 0x13. Port-state reads (group 0x64) go in the
+    # plugin table so they win over the generic _PROBE_SYNTH hub-probe echo.
+    hub_ident = model.get('hub_identity')
+    if hub_ident:
+        device_rsp.update(_build_device_identity(0x12, hub_ident))
+        for req, rsp in (model.get('hub_port_states') or {}).items():
+            plugin_rsp[(0x64, 0x12, bytes(req))] = bytes(rsp)
 
     return plugin_rsp, pithouse_rsp, device_rsp
 
@@ -2878,6 +2886,18 @@ class WheelSimulator:
         self._simulated_devices |= {dev for (dev, _, _) in self._device_id_rsp}
         self._simulated_devices |= {b.address for b in self._device_blocks
                                     if getattr(b, 'present', True)}
+        # Universal Hub topology (a `uhub` block on 0x12): no wheelbase exists,
+        # so 0x13 must stay silent (real hub capture never answers it), and the
+        # hub's own 0x0E parameter table replaces the wheelbase-derived one.
+        uhub = next((b for b in self._device_blocks
+                     if getattr(b, 'role', '') == 'uhub'), None)
+        self._uhub = uhub is not None
+        if uhub is not None:
+            self._simulated_devices.discard(0x13)
+            rel = uhub.extras.get('param_0e_table')
+            if rel:
+                p = Path(__file__).parent.parent / rel
+                self._param_0e_tables[0x12] = json.loads(p.read_text()).get('entries', {})
         self.mgmt_session = 0
         self.telem_session = 0
         self.sessions_opened = 0
@@ -4456,6 +4476,12 @@ class WheelSimulator:
             self._record('es_drop_17', frame)
             return []
 
+        # Universal Hub routing: there is no wheelbase behind a hub, so nothing
+        # (identity, replay, probe synth, base-write echo) may answer 0x13.
+        if device == 0x13 and self._uhub:
+            self._record('uhub_drop_13', frame)
+            return []
+
         # Stateful wheel handlers (session/tier def/display/telemetry). Returns
         # None if this isn't a known wheel-protocol command so we fall through.
         if group == GRP_HOST and device == self.wheel_device:
@@ -5492,6 +5518,18 @@ def extract_device_catalog(path: str) -> Dict[int, List[bytes]]:
     return result
 
 
+def load_catalog_json(path: str) -> Tuple[Dict[int, List[bytes]], Dict[int, int]]:
+    """Load a catalog extract written by tools/extract_catalog_json.py:
+    {"schema": 1, "sessions": {"1": [frame_hex, ...]}, "open_seqs": {"1": n}}."""
+    with open(path, encoding='utf-8') as fh:
+        data = json.load(fh)
+    if data.get('schema') != 1:
+        raise ValueError(f'{path}: unsupported schema')
+    catalog = {int(k): [bytes.fromhex(h) for h in v] for k, v in data['sessions'].items()}
+    seqs = {int(k): int(v) for k, v in (data.get('open_seqs') or {}).items()}
+    return catalog, seqs
+
+
 def extract_catalog_open_seqs(path: str) -> Dict[int, int]:
     """Extract host-sent session-open seq bytes per session from a capture.
 
@@ -6009,7 +6047,10 @@ def cmd_live(port: str, db: Dict[str, dict], replay: Optional[ResponseReplay] = 
 
     print(f'Opening {port} ...')
     try:
-        ser = serial.Serial(port, baudrate=115200, timeout=None)
+        # serial_for_url accepts plain device paths (/dev/ttyGS0, COM5) exactly
+        # like serial.Serial, plus pyserial URLs — hub_bridge.py drives the sim
+        # over `socket://127.0.0.1:<port>` so it runs on Windows with no tty.
+        ser = serial.serial_for_url(port, baudrate=115200, timeout=None)
     except (serial.SerialException, OSError) as e:
         print(f'[ERROR] Cannot open {port}: {e}')
         sys.exit(1)
@@ -6340,6 +6381,14 @@ def main():
                   f'({sum(len(v) for v in device_catalog.values())} frames, '
                   f'baseline opens={ {s: catalog_capture_open_seqs.get(s) for s in sorted(device_catalog)} })]',
                   file=sys.stderr)
+        elif model.get('catalog_json') and (Path(__file__).parent.parent / model['catalog_json']).exists():
+            # Committed extract of the same capture (captures aren't in the
+            # repo) — keeps a fresh clone / Windows install on the real catalog.
+            device_catalog, catalog_capture_open_seqs = load_catalog_json(
+                str(Path(__file__).parent.parent / model['catalog_json']))
+            print(f'[Device catalog: replay from {model["catalog_json"]} '
+                  f'sessions {sorted(device_catalog.keys())} '
+                  f'({sum(len(v) for v in device_catalog.values())} frames)]', file=sys.stderr)
         else:
             print(f'[WARN] catalog_pcapng {cap_path} not found, falling back to synth',
                   file=sys.stderr)

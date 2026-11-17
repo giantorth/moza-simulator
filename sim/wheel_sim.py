@@ -3038,6 +3038,10 @@ class WheelSimulator:
         # reflects the value when set externally via the MCP tool.
         self.active_dash_index = 1
         self.active_dash_pages = 1
+        # Multi-mode thumb dial (cmd 0x28) state; side 0 = left, 1 = right.
+        self.multifn_enable = 0
+        self.multifn_knob = None
+        self.multifn_side = {}
         # Virtual wheel filesystem — tracks ONLY user-installed content
         # (uploaded dashboards, tile server caches). Persisted across
         # restarts at sim/logs/wheel_fs.json. Starts empty.
@@ -4531,31 +4535,47 @@ class WheelSimulator:
     # mirrors the pre-refactor branch order verbatim — no semantic changes.
 
     def _try_active_dash_query(self, frame, group, device, payload_all):
-        """Active-dashboard config reads (group 0x40 cmd 0x28). Dynamic so
-        PitHouse sees the correct active-dash index after
-        `sim_set_active_dashboard` is called.
+        """Multi-mode thumb dial, wheel cmd 0x28 (Pit House
+        WheelSet/GetCfg_SetMultiFunctionSwitch/Num/Left/Right).
 
-        See pithouse-re.md: 28:00 = WheelGetCfg_GetMultiFunctionSwitch
-        (active dash mode index), 28:01 = WheelGetCfg_GetMultiFunctionNum
-        (active dash page count). 28:02 stays in the static table — it's
-        multi-function telemetry mode, not dash-related."""
-        if not (group == 0x40 and device == self.wheel_device
-                and len(payload_all) >= 2 and payload_all[0] == 0x28):
+        Writes (grp 0x3F): `28 00 [en]`, `28 01 [knob]`, `28 02 [side] [v]`,
+        acked with a `bf 71` echo (r16-ffb-style-20261113 capture, W17).
+        Reads (grp 0x40): `28 00` / `28 01` answer `[value][x]`; Pit House
+        reads 8 bits. x is not decoded; it tracks the active-dash index in
+        the KS Pro capture (`28 01 04 05`), so it stays active_dash_index.
+        `28 02 [side]` answers the written side nibble twice (FF → `0f 0f`);
+        unwritten sides fall through to the per-model replay. Until written,
+        knob reads active_dash_pages (pre-existing output)."""
+        if not (device == self.wheel_device and len(payload_all) >= 2
+                and payload_all[0] == 0x28 and group in (0x3F, 0x40)):
             return None
         sub = payload_all[1]
+        pl = bytes(payload_all)
+        if group == 0x3F:
+            if sub == 0x00 and len(pl) >= 3:
+                self.multifn_enable = pl[2]
+            elif sub == 0x01 and len(pl) >= 3:
+                self.multifn_knob = pl[2]
+            elif sub == 0x02 and len(pl) >= 4:
+                self.multifn_side[pl[2]] = pl[3]
+            else:
+                return None
+            self._record('multifn_write', frame)
+            return [build_frame(group | 0x80, swap_nibbles(device), pl)]
         if sub == 0x00:
-            # latestcaps pno 63263: `28 00 00` → `28 00 00 01`. Sim previously
-            # returned 3 bytes which PitHouse silently dropped.
-            dyn_rsp = bytes([0x28, 0x00, 0x00, self.active_dash_index & 0xFF])
-        elif sub == 0x01:
-            # putOnWheelAndOpenPitHouse.pcapng frame 38895: `28 01 04 05` =
-            # 4 pages, active dash slot 5.
-            dyn_rsp = bytes([0x28, 0x01,
-                             self.active_dash_pages & 0xFF,
+            dyn_rsp = bytes([0x28, 0x00, self.multifn_enable & 0xFF,
                              self.active_dash_index & 0xFF])
+        elif sub == 0x01:
+            knob = (self.multifn_knob if self.multifn_knob is not None
+                    else self.active_dash_pages)
+            dyn_rsp = bytes([0x28, 0x01, knob & 0xFF,
+                             self.active_dash_index & 0xFF])
+        elif sub == 0x02 and len(pl) >= 3 and pl[2] in self.multifn_side:
+            v = self.multifn_side[pl[2]] & 0x0F
+            dyn_rsp = bytes([0x28, 0x02, v, v])
         else:
             return None
-        self._record('active_dash_query', frame)
+        self._record('multifn_query', frame)
         return [build_frame(group | 0x80, swap_nibbles(device), dyn_rsp)]
 
     def _try_hub_cfg(self, frame, group, device, payload_all):
@@ -4830,12 +4850,15 @@ class WheelSimulator:
 
             if msg_type == SESSION_TYPE_OPEN:
                 tag = 'session_open'
-                # Re-handshake detection: host-initiated open on session 0x01
-                # (mgmt) while we already have sessions open means SimHub/plugin
-                # restarted or switched profiles. Reset per-connection state so
-                # the new handshake starts clean. Keep wheel-level identity +
-                # persistent filesystem + cumulative counters.
-                if session == 0x01 and self._device_init_started:
+                # Re-handshake detection: a repeat host open of 0x01 or 0x02
+                # (or any after a resumed connection) means SimHub/plugin or
+                # Pit House restarted. Order varies: Pit House reopens
+                # 02, 03, 01. Reset per-connection state so the device-init
+                # burst (catalog incl. kind=18) re-fires. Keep wheel-level
+                # identity + persistent filesystem + cumulative counters.
+                if (session in (0x01, 0x02) and self._device_init_started
+                        and (session in self.session_open_seqs
+                             or self._reconnect_detected)):
                     self._reset_connection_state()
                 # Per-session buffer reset on re-open. PitHouse may re-open a
                 # session it previously used (e.g. 0x09 was used for configJson

@@ -91,7 +91,7 @@
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0a43177c00038103000300fd02f4", "out": ["7e05c371fc00030300c6"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000912a6", "out": ["7e02892100033a"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04041200000000a5", "out": ["7e0484210102050844"]}
-{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000612a3", "out": ["7e0c86210000000000000000000000003e"]}
+{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000612a3", "out": ["7e0c862155485542533033485542303067"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01021200a0", "out": ["7e0182210231"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04051200000000a6", "out": ["7e048521010233006b"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0a43177c00018101000100fd02ee", "out": ["7e05c371fc00010100c2"]}
@@ -108,7 +108,7 @@
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01431700e6", "out": ["7e01c3718040"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000912a6", "out": ["7e02892100033a"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04041200000000a5", "out": ["7e0484210102050844"]}
-{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000612a3", "out": ["7e0c86210000000000000000000000003e"]}
+{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000612a3", "out": ["7e0c862155485542533033485542303067"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01021200a0", "out": ["7e0182210231"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04051200000000a6", "out": ["7e048521010233006b"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01071201a6", "out": ["7e1187210153303320485542000000000000000000fa"]}
@@ -130,8 +130,8 @@
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000017a2", "out": ["7e0080717c"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0000129d", "out": ["7e0080212c"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000917ab", "out": ["7e028971000188"]}
-{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04041700000000aa", "out": ["7e0484710102070795"]}
-{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000617a8", "out": ["7e0c86710000000000000000000000008e"]}
+{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04041700000000aa", "out": ["7e04847101020c079a"]}
+{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000617a8", "out": ["7e0c86714b5350573138574845454c30e1"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01021700a5", "out": ["7e0182710281"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e04051700000000ab", "out": ["7e04857101024101ca"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01071701ab", "out": ["7e118771015731380000000000000000000000000055"]}
@@ -178,7 +178,7 @@
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0000129d", "out": ["7e0080212c"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e000017a2", "out": ["7e0080717c"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01431709ef", "out": ["7e03c3718900014c"]}
-{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0543170400000000ee", "out": ["7e05c371840102110662"]}
+{"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0543170400000000ee", "out": ["7e05c371840102110763"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e01431706ec", "out": ["7e0dc371868ae5d086b2fcad7486dbe20831"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0243170200e9", "out": ["7e02c371820245"]}
 {"cap": "usb-capture/ksp/mozahubstartup.pcapng", "in": "7e0543170500000000ef", "out": ["7e05c37185010200004c"]}

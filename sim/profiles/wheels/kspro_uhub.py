@@ -30,7 +30,9 @@ HUB_IDENTITY = {
     'sw_version': 'RS21-S03-MC HUB',
     'serial0': 'UHUB000000000000',
     'serial1': 'UHUB000000000001',
-    'hw_id': bytes(12),
+    # Synthetic, unique per device: Pit House keys controllers (and each
+    # wheel's main controller) by MCU UID, so all-zero UIDs collide.
+    'hw_id': b'UHUBS03HUB00',
     'caps': bytes([0x01, 0x02, 0x33, 0x00]),
     'dev_type': bytes([0x01, 0x02, 0x05, 0x08]),
     'identity_09': bytes([0x00, 0x03]),

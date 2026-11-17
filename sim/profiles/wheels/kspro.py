@@ -13,9 +13,8 @@ LEGACY = {
         # module with CSP (same 12B display hw_id). Identity strings + session
         # description chunks extracted from
         # usb-capture/ksp/putOnWheelAndOpenPitHouse.pcapng (frames ~19500–19700,
-        # full PitHouse handshake). Wheel-head dev_type byte-exact from
-        # capture grp=0x84 reply (`01 02 07 07`); the session2 catalog
-        # carries a separate model byte (0x05 at desc position 7).
+        # full PitHouse handshake). The session2 catalog carries a separate
+        # model byte (0x05 at desc position 7).
         'name': 'W18',
         'friendly': 'KS Pro',
         # LED counts from probe enumeration in capture: page 0 sub=0 reads
@@ -29,14 +28,18 @@ LEGACY = {
         # Serials redacted.
         'serial0': 'KSP0000000000000',
         'serial1': 'KSP0000000000001',
-        # Wheel-head caps + hw_id + dev_type byte-exact from
-        # putOnWheelAndOpenPitHouse.pcapng grp=0x85/0x86/0x84 replies. Earlier
-        # values were stale CSP-display copies; PitHouse classifies the wheel
-        # off these bytes and demotes from "KS Pro" to a generic model when
-        # they don't match. Verified 2026-04-26.
+        # Wheel-head caps byte-exact from putOnWheelAndOpenPitHouse.pcapng
+        # grp=0x85 reply. Earlier values were stale CSP-display copies;
+        # PitHouse classifies the wheel off these bytes and demotes from
+        # "KS Pro" to a generic model when they don't match. Verified
+        # 2026-04-26.
         'caps': bytes([0x01, 0x02, 0x41, 0x01]),
-        'hw_id': bytes.fromhex('000000000000000000000000'),
-        'dev_type': bytes([0x01, 0x02, 0x07, 0x07]),
+        # Synthetic, unique per device: Pit House keys controllers (and each
+        # wheel's main controller) by MCU UID, so all-zero UIDs collide.
+        'hw_id': b'KSPW18WHEEL0',
+        # dev_type = firmware 1.2.7.12 (wire order major.minor.build.patch),
+        # from bug report 152GYZ3E grp=0x84 reply (the pcapng had 1.2.7.7).
+        'dev_type': bytes([0x01, 0x02, 0x0c, 0x07]),
         'emits_7c23': True,
         # KS Pro page-activate frames (3 variants, `fc 03` trailer) byte-exact
         # from putOnWheelAndOpenPitHouse.pcapng. Differ from CSP's 2-variant
@@ -89,7 +92,7 @@ LEGACY = {
             'sw_version': 'RS21-D07-MC WB',
             'serial0': 'R12BASE000000000',
             'serial1': 'R12BASE000000001',
-            'hw_id': bytes.fromhex('000000000000000000000000'),
+            'hw_id': b'R12BASEMCU00',
             'caps': bytes([0x01, 0x02, 0x4b, 0x00]),
             'dev_type': bytes([0x01, 0x02, 0x0e, 0x09]),
         },
@@ -102,7 +105,7 @@ LEGACY = {
             'sw_version': 'RS21-D01-MC PB',
             'serial0': 'SRPPEDAL00000000',
             'serial1': 'SRPPEDAL00000001',
-            'hw_id': bytes.fromhex('000000000000000000000000'),
+            'hw_id': b'SRPPEDALMCU0',
             'caps': bytes([0x01, 0x02, 0x18, 0x00]),
             'dev_type': bytes([0x01, 0x02, 0x02, 0x05]),
             # Pedal returns 00:04 on cmd 09, while hub/base return 00:01.
@@ -126,9 +129,9 @@ LEGACY = {
             # Serials redacted.
             'serial0': 'KSPDISPLAY000000',
             'serial1': 'KSPDISPLAY000001',
-            # Display dev_type byte-exact from
-            # putOnWheelAndOpenPitHouse.pcapng grp=0xC3 wrapper grp=0x84 reply.
-            'dev_type': bytes([0x01, 0x02, 0x11, 0x06]),
+            # Display firmware 1.2.7.17, from bug report 152GYZ3E grp=0xC3
+            # wrapper grp=0x84 reply.
+            'dev_type': bytes([0x01, 0x02, 0x11, 0x07]),
             'caps': bytes([0x01, 0x02, 0x00, 0x00]),
             'hw_id': bytes.fromhex('8ae5d086b2fcad7486dbe208'),
         },

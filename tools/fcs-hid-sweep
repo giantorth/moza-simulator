@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Move the simulated FCS's HID axes like a hand during calibration.
+
+Writes 29-byte FCS reports (sim/engines/fcs.py layout) straight to the gadget's
+/dev/hidg<N>, alongside a running engine — the CDC side is untouched.
+
+    tools/fcs-hid-sweep xy          # joystick: 3 circles clockwise, 3 counter-clockwise
+    tools/fcs-hid-sweep throttle    # lever: full travel x3
+    tools/fcs-hid-sweep z           # twist: left/right x3
+    tools/fcs-hid-sweep thumbstick  # thumbstick: circles both ways
+    tools/fcs-hid-sweep all         # each of the above in turn
+Options: --hid /dev/hidg0  --period 2.0 (s per cycle)  --cycles 3
+Ends with every axis at rest.
+"""
+import argparse
+import math
+import os
+import struct
+import sys
+import time
+
+AXES = ("joystick_x", "joystick_y", "thumbstick_x", "thumbstick_y", "throttle", "joystick_z")
+REST = {"joystick_x": 32767, "joystick_y": 32767, "thumbstick_x": 32767,
+        "thumbstick_y": 32767, "throttle": 65535, "joystick_z": 32767}
+RATE = 200  # reports/s
+
+
+def report(state):
+    return bytes([1]) + struct.pack("<6H", *(max(0, min(65535, int(state[a]))) for a in AXES)) + bytes(16)
+
+
+def run(fd, state, duration, fn):
+    t0 = time.monotonic()
+    while True:
+        t = time.monotonic() - t0
+        if t >= duration:
+            break
+        fn(state, t)
+        try:
+            os.write(fd, report(state))
+        except BlockingIOError:
+            pass
+        time.sleep(1 / RATE)
+
+
+def circle(xa, ya, period, cycles):
+    def seq(fd, state):
+        for direction in (1, -1):
+            print(f"  {xa[:-2]} circles {'clockwise' if direction > 0 else 'counter-clockwise'}", flush=True)
+            run(fd, state, period * cycles, lambda s, t: s.update({
+                xa: 32767 + 32767 * math.cos(direction * 2 * math.pi * t / period),
+                ya: 32767 + 32767 * math.sin(direction * 2 * math.pi * t / period)}))
+            state[xa], state[ya] = REST[xa], REST[ya]
+    return seq
+
+
+def travel(axis, period, cycles, start_max):
+    def seq(fd, state):
+        print(f"  {axis} full travel", flush=True)
+        run(fd, state, period * cycles, lambda s, t: s.update({
+            axis: 32767.5 + (32767.5 if start_max else -32767.5) * math.cos(2 * math.pi * t / period)}))
+        state[axis] = REST[axis]
+    return seq
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("what", choices=("xy", "throttle", "z", "thumbstick", "all"))
+    ap.add_argument("--hid", default="/dev/hidg0")
+    ap.add_argument("--period", type=float, default=2.0)
+    ap.add_argument("--cycles", type=int, default=3)
+    a = ap.parse_args()
+    seqs = {
+        "xy": circle("joystick_x", "joystick_y", a.period, a.cycles),
+        "throttle": travel("throttle", a.period, a.cycles, True),
+        "z": travel("joystick_z", a.period, a.cycles, False),
+        "thumbstick": circle("thumbstick_x", "thumbstick_y", a.period, a.cycles),
+    }
+    order = list(seqs) if a.what == "all" else [a.what]
+    fd = os.open(a.hid, os.O_WRONLY | os.O_NONBLOCK)
+    state = dict(REST)
+    try:
+        for k in order:
+            seqs[k](fd, state)
+    finally:
+        state = dict(REST)
+        try:
+            os.write(fd, report(state))
+        except OSError:
+            pass
+        os.close(fd)
+    print("  done (axes at rest)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

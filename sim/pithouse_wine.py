@@ -181,7 +181,7 @@ def main() -> int:
         p.add_argument("--com", default="COM40")
         p.add_argument("--vid", type=lambda s: int(s, 0), default=MOZA_VID)
         p.add_argument("--pid", type=lambda s: int(s, 0), default=0x0006,
-                       help="0x0000 R16 base, 0x0006 base, 0x0008 mBooster")
+                       help="0x0000 R16 base, 0x0006 base, 0x0008 mBooster, 0x0030 FCS")
         p.add_argument("--serial", default="AZOMHARNESS0001")
 
     p = sub.add_parser("register"); ident(p)

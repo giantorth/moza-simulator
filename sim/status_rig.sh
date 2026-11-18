@@ -32,8 +32,10 @@ for g in "$GC_CONFIGFS"/moza "$GC_CONFIGFS"/moza_*; do
     pid=$(cat "$g/idProduct" 2>/dev/null || echo "?")
     udc=$(cat "$g/UDC" 2>/dev/null | tr -d '[:space:]')
     port=$(cat "$g/functions/acm.usb0/port_num" 2>/dev/null || echo "?")
-    printf "  %-16s pid=%-7s UDC=%-14s ttyGS%s\n" \
-        "$name" "$pid" "${udc:-(unbound)}" "$port"
+    hid=""
+    [[ "$name" == moza_* ]] && hid=$(gc_hidg_path "${name#moza_}")
+    printf "  %-16s pid=%-7s UDC=%-14s ttyGS%s%s\n" \
+        "$name" "$pid" "${udc:-(unbound)}" "$port" "${hid:+  hid=$hid}"
 done
 [[ $found -eq 0 ]] && echo "  (no moza gadgets)"
 

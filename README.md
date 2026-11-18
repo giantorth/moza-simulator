@@ -20,7 +20,7 @@ registry (`sim/profiles/`) and a small set of sim engines:
 | **Display wheel** | FSR V1 (group `0x42` push) |
 | **Standalone dash** | CM2 Racing Dash (PID `0x0025`, tier-def + LED bitmask) |
 | **Bus dash** | CM1 Racing Dash (group `0x35` keyed-float stream + `0x0E` param bank) |
-| **Peripherals** | AB9 active shifter (incl. HID gear-state reports), mBooster pedal, SRP pedals, HBP handbrake |
+| **Peripherals** | AB9 active shifter (incl. HID gear-state reports), mBooster pedal, SRP pedals, HBP handbrake, FCS Farming Control System (group `0x4E` settings/calibration + HID joystick report) |
 | **Base / hub** | R5 / R9 / R12 wheelbase + Universal Hub identity cascades |
 
 Each device's identity, capabilities, and wire behaviour come from real
@@ -66,6 +66,15 @@ python3 sim/gadget_manager.py run mbooster /dev/ttyGS1   # engines on the printe
 
 tty0tty setup and troubleshooting: [`sim/README.md`](sim/README.md); usbip:
 [`sim/USBIP_SETUP.md`](sim/USBIP_SETUP.md).
+
+FCS (Farming Control System, PID `0x0030`): `sudo bash sim/setup_rig.sh --local fcs`
+brings the gadget up on this machine (`--local` skips usbip, so cdc_acm/usbhid
+bind it like real hardware), then `gadget_manager.py run fcs /dev/ttyGS0` and
+restart the Wine session before launching Pit House. A tty0tty port registered
+with `pithouse_wine.py` is listed by Pit House as `vid:0 pid:0` under the
+linux-simracing-utils Wine and ignored. The `rig_fcs_*` tools of the rig MCP
+server drive the HID axes/buttons and the reported rod type / calibration
+results. Offline check: `python3 sim/engines/fcs.py --self-test`.
 
 mBooster profiles: `mbooster` (host brake + chained throttle + passive clutch),
 `mbooster_single` (one unit, passive throttle and clutch),

@@ -3,7 +3,7 @@
 
 A rig is several device-sim engines, each serving one gadget's ttyGS. This server
 runs the standalone device engines (StandaloneSimulator, MBoosterSimulator,
-Cm1Simulator) IN-PROCESS with full frame / unhandled / recent inspection — the
+Cm1Simulator, FcsSimulator) IN-PROCESS with full frame / unhandled / recent inspection — the
 gap the wheel-only mcp_server.py and ab9_mcp_server.py don't fill. Wheel
 (engine=unified) and AB9 engines are launched as subprocesses via
 gadget_manager.py (they have their own rich machinery + MCPs), so a whole rig can
@@ -13,7 +13,7 @@ Gadget bring-up (configfs, needs root) is NOT done here — run
 `sudo bash sim/setup_rig.sh <keys...>` first, then point rig_start at each ttyGS.
 
 Tools: rig_list, rig_start, rig_stop, rig_status, rig_recent, rig_unhandled,
-rig_counters, rig_set_cm1_param.
+rig_counters, rig_set_cm1_param, rig_fcs_state, rig_fcs_set_status, rig_fcs_input.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -34,6 +34,7 @@ import wheel_sim as ws  # noqa: E402
 from engines.standalone import (  # noqa: E402
     StandaloneSimulator, MBoosterSimulator, Cm1Simulator,
 )
+from engines.fcs import FcsSimulator, find_hidg, HID_AXIS_NAMES  # noqa: E402
 
 _server = FastMCP("moza-rig")
 
@@ -42,6 +43,7 @@ _INPROC_ENGINES = {
     "standalone": StandaloneSimulator,
     "mbooster": MBoosterSimulator,
     "cm1": Cm1Simulator,
+    "fcs": FcsSimulator,
 }
 _SUBPROC_ENGINES = {"unified", "ab9"}
 
@@ -131,6 +133,11 @@ def rig_start(profile_key: str, port: str, wire_trace: bool = False) -> dict:
             except Exception as e:
                 return {"error": f"cannot open {port}: {e}"}
             engine = _INPROC_ENGINES[engine_kind](p)
+            hid = None
+            if isinstance(engine, FcsSimulator):
+                hid = os.environ.get("FCS_HID_DEV") or find_hidg(profile_key)
+                if hid and not engine.attach_hid(hid):
+                    hid = None
             alive = threading.Event()
             alive.set()
             wire_fh = None
@@ -144,8 +151,11 @@ def rig_start(profile_key: str, port: str, wire_trace: bool = False) -> dict:
             t.start()
             _engines[port] = {"key": profile_key, "kind": "inproc", "engine": engine,
                               "thread": t, "alive": alive, "started": time.time()}
-            return {"status": "started", "port": port, "profile": profile_key,
-                    "engine": engine_kind, "kind": "in-process"}
+            out = {"status": "started", "port": port, "profile": profile_key,
+                   "engine": engine_kind, "kind": "in-process"}
+            if isinstance(engine, FcsSimulator):
+                out["hid"] = hid
+            return out
         # wheel / ab9 -> subprocess
         proc = subprocess.Popen(["python3", str(HERE / "gadget_manager.py"),
                                  "run", profile_key, port])
@@ -250,6 +260,63 @@ def rig_set_cm1_param(port: str, reg: int, value: int) -> dict:
     eng.PARAM_TABLE = dict(eng.PARAM_TABLE)
     eng.PARAM_TABLE[reg] = value & 0xFFFFFFFF
     return {"status": "set", "port": port, "reg": reg, "value": value}
+
+
+def _fcs(port: str):
+    eng = _inproc(port)
+    return eng if isinstance(eng, FcsSimulator) else None
+
+
+@_server.tool()
+def rig_fcs_state(port: str) -> dict:
+    """FCS engine state: every group-0x4E setting (key "param/index", values as
+    stored on the wire), rightRodType, per-axis calibration results, running
+    calibrations, HID axes/buttons."""
+    eng = _fcs(port)
+    if eng is None:
+        return {"error": f"no fcs engine on {port}"}
+    return {"port": port, **eng.snapshot()}
+
+
+@_server.tool()
+def rig_fcs_set_status(port: str, right_rod_type: Optional[int] = None,
+                       calib_axis: Optional[int] = None,
+                       calib_result: Optional[int] = None,
+                       firmware_log: Optional[bool] = None) -> dict:
+    """Change what the FCS reports. right_rod_type: 0 none, 1 built-in joystick,
+    2 MHG, 3 MA3X, 4 MH16 (status 04 03). calib_axis 0..5 + calib_result: the
+    checkCalib answer (status 04 04 <axis>; 1 = pass). firmware_log toggles the
+    group-0x0E log lines."""
+    eng = _fcs(port)
+    if eng is None:
+        return {"error": f"no fcs engine on {port}"}
+    if right_rod_type is not None:
+        eng.right_rod_type = right_rod_type & 0xFF
+    if calib_axis is not None and calib_result is not None:
+        if calib_axis not in eng.calib_result:
+            return {"error": "calib_axis must be 0..5"}
+        eng.calib_result[calib_axis] = calib_result & 0xFF
+    if firmware_log is not None:
+        eng.firmware_log = firmware_log
+    return {"port": port, **eng.snapshot()}
+
+
+@_server.tool()
+def rig_fcs_input(port: str, axes: Optional[Dict[str, int]] = None,
+                  buttons: Optional[List[int]] = None) -> dict:
+    """Drive the FCS HID report. axes: {name: 0..65535} with names
+    joystick_x, joystick_y, thumbstick_x, thumbstick_y, throttle, joystick_z
+    (rest 32767, throttle rest 65535). buttons: pressed button numbers 1..128
+    (replaces the pressed set; [] releases all). Needs the gadget's f_hid."""
+    eng = _fcs(port)
+    if eng is None:
+        return {"error": f"no fcs engine on {port}"}
+    bad = [a for a in (axes or {}) if a not in HID_AXIS_NAMES]
+    if bad:
+        return {"error": f"unknown axes {bad}", "axes": list(HID_AXIS_NAMES)}
+    rep = eng.set_input(axes, buttons)
+    return {"port": port, "report": rep.hex(), "hid": eng.hid_path or None,
+            "written": eng.hid_path != ""}
 
 
 def run_stdio():

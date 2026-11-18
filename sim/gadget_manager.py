@@ -9,10 +9,12 @@ engine on a gadget's ttyGS.
     python3 sim/gadget_manager.py spec <key> [<key>...]   # consumed by setup_rig.sh
     python3 sim/gadget_manager.py run  <key> <ttyGS>       # launch that gadget's engine
     python3 sim/gadget_manager.py list                     # show known profiles
+    python3 sim/gadget_manager.py hid-desc <key>           # HID report descriptor (binary)
 
 Engine routing (GadgetSpec.engine):
     unified            -> wheel_sim.py --model <key> <port>   (wheel rig)
     standalone/mbooster-> engines.standalone.{StandaloneSimulator,MBoosterSimulator}
+    fcs                -> engines.fcs.FcsSimulator (+ /dev/hidg<N> when the gadget has f_hid)
     ab9                -> ab9_sim.py <port>
     uhub               -> hub_bridge.py (userspace USB/IP device — no configfs
                           gadget; `spec` refuses it, `run` ignores <port>)
@@ -64,12 +66,18 @@ def cmd_spec(keys):
             gkey = key if not multi else f"{key}{idx}"
             product = g.product_str or p.friendly
             base = re.sub(r"[^A-Z0-9]", "", key.upper())[:9] or "MOZA"
-            serial = f"{base}{idx:03d}0001"[:16]
+            # A profile serial is only usable when the gadget is unique; repeated
+            # keys need distinct serials for gc_wait_enumerate.
+            serial = g.serial_str if (g.serial_str and not multi) else f"{base}{idx:03d}0001"[:16]
             maxpower = 250 if g.engine == "unified" else 100
             iad = 1 if "hid" in g.functions else 0
+            manufacturer = g.manufacturer_str or "MOZA Racing"
+            # hidlen 0 = no f_hid function. Every field stays non-empty: bash
+            # `read` with IFS=tab collapses empty fields.
+            hidlen = g.hid_report_len if ("hid" in g.functions and g.hid_report_desc) else 0
             gadget_lines.append(
                 f"GADGET\t{gkey}\t{key}\t0x{g.pid:04x}\t{product}\t{serial}"
-                f"\t{maxpower}\t{iad}\t{g.engine}")
+                f"\t{maxpower}\t{iad}\t{g.engine}\t{manufacturer}\t{hidlen}")
             udc += 1
     print(f"UDC_NEEDED\t{udc}")
     for ln in gadget_lines:
@@ -94,6 +102,17 @@ def cmd_run(key, port):
     elif engine == "uhub":
         os.execvp(sys.executable, [sys.executable, os.path.join(HERE, "hub_bridge.py"),
                                    "--model", key])
+    elif engine == "fcs":
+        from engines.fcs import FcsSimulator, find_hidg
+        sim = FcsSimulator(p)
+        # gadget key == profile key for a single gadget (setup_rig.sh); the env
+        # var covers repeated keys and hand-built gadgets.
+        hid = os.environ.get("FCS_HID_DEV") or find_hidg(key)
+        if hid and sim.attach_hid(hid):
+            print(f"[fcs HID report on {hid}]", file=sys.stderr)
+        else:
+            print("[fcs: no HID endpoint — CDC only (tty0tty / Wine path)]", file=sys.stderr)
+        sim.run_serial(port)
     elif engine == "ab9":
         os.execvp("python3", ["python3", os.path.join(HERE, "ab9_sim.py"), port])
     else:
@@ -126,6 +145,15 @@ def main() -> int:
         cmd_run(sys.argv[2], sys.argv[3])
     elif sub == "list":
         cmd_list()
+    elif sub == "hid-desc":
+        if len(sys.argv) != 3:
+            print("usage: gadget_manager.py hid-desc <key>", file=sys.stderr)
+            return 2
+        desc = _profile(sys.argv[2]).gadgets[0].hid_report_desc
+        if not desc:
+            print(f"profile '{sys.argv[2]}' has no HID report descriptor", file=sys.stderr)
+            return 2
+        sys.stdout.buffer.write(desc)
     else:
         print(f"unknown subcommand '{sub}'", file=sys.stderr)
         return 2

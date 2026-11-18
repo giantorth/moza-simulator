@@ -88,11 +88,15 @@ gc_find_free_udc() {
 }
 
 # gc_create_gadget <key> <pid_hex> <product> <serial> <maxpower> <iad:0|1>
+#                  [<manufacturer>] [<hid_report_len> <hid_report_desc_file>]
 #   Builds the configfs tree, binds a free UDC, and echoes the allocated
 #   /dev/ttyGS<N> path on success. iad=1 sets the IAD composite class bytes
-#   (AB9 mirrors its real descriptor this way).
+#   (AB9 mirrors its real descriptor this way). A non-zero hid_report_len adds
+#   an f_hid function after acm (HID on MI_02, like the real composites); its
+#   /dev/hidg<N> is made world-writable and reported on stderr.
 gc_create_gadget() {
     local key="$1" pid="$2" product="$3" serial="$4" maxpower="$5" iad="${6:-0}"
+    local manufacturer="${7:-MOZA Racing}" hidlen="${8:-0}" hiddesc="${9:-}"
     local gadget="$GC_CONFIGFS/moza_${key}"
 
     mkdir -p "$gadget"
@@ -107,9 +111,9 @@ gc_create_gadget() {
     fi
 
     mkdir -p "$gadget/strings/0x409"
-    echo "MOZA Racing" > "$gadget/strings/0x409/manufacturer"
-    echo "$product"    > "$gadget/strings/0x409/product"
-    echo "$serial"     > "$gadget/strings/0x409/serialnumber"
+    echo "$manufacturer" > "$gadget/strings/0x409/manufacturer"
+    echo "$product"      > "$gadget/strings/0x409/product"
+    echo "$serial"       > "$gadget/strings/0x409/serialnumber"
 
     mkdir -p "$gadget/configs/c.1/strings/0x409"
     echo "Config 1"  > "$gadget/configs/c.1/strings/0x409/configuration"
@@ -117,6 +121,19 @@ gc_create_gadget() {
 
     mkdir -p "$gadget/functions/acm.usb0"
     ln -sf "$gadget/functions/acm.usb0" "$gadget/configs/c.1/"
+
+    if (( hidlen > 0 )); then
+        if [[ ! -s "$hiddesc" ]]; then
+            echo "moza_${key}: HID report descriptor file '$hiddesc' missing/empty." >&2
+            return 1
+        fi
+        mkdir -p "$gadget/functions/hid.usb0"
+        echo 0         > "$gadget/functions/hid.usb0/protocol"
+        echo 0         > "$gadget/functions/hid.usb0/subclass"
+        echo "$hidlen" > "$gadget/functions/hid.usb0/report_length"
+        cat "$hiddesc" > "$gadget/functions/hid.usb0/report_desc"
+        ln -sf "$gadget/functions/hid.usb0" "$gadget/configs/c.1/"
+    fi
 
     local udc
     udc=$(gc_find_free_udc) || {
@@ -142,7 +159,32 @@ gc_create_gadget() {
         sleep 0.2
     done
     chmod a+rw "$ttygs" 2>/dev/null || true
+
+    if (( hidlen > 0 )); then
+        local hidg
+        hidg=$(gc_hidg_path "$key")
+        if [[ -n "$hidg" ]]; then
+            for _ in 1 2 3 4 5; do
+                [[ -c "$hidg" ]] && break
+                sleep 0.2
+            done
+            chmod a+rw "$hidg" 2>/dev/null || true
+            echo "   hid=$hidg" >&2
+        else
+            echo "   moza_${key}: f_hid created but no /dev/hidg<N> found" >&2
+        fi
+    fi
     echo "$ttygs"
+}
+
+# gc_hidg_path <key> -> echo /dev/hidg<N> of moza_<key>'s hid.usb0 (if any)
+gc_hidg_path() {
+    local devfile="$GC_CONFIGFS/moza_${1}/functions/hid.usb0/dev" majmin name
+    [[ -f "$devfile" ]] || return 0
+    majmin=$(cat "$devfile" 2>/dev/null) || return 0
+    name=$(grep '^DEVNAME=' "/sys/dev/char/${majmin}/uevent" 2>/dev/null | cut -d= -f2)
+    [[ -n "$name" ]] && echo "/dev/$name"
+    return 0
 }
 
 # gc_start_usbipd — start usbipd if not already listening on 3240 (idempotent;
@@ -220,12 +262,13 @@ gc_teardown_gadget() {
     [[ -n "$busid" ]] && usbip unbind -b "$busid" 2>/dev/null || true
     echo "" > "$gadget/UDC" 2>/dev/null || true
     local f
-    for f in "$gadget"/configs/c.1/acm.usb0; do
-        [[ -e "$f" ]] && rm -f "$f"
+    for f in "$gadget"/configs/c.1/acm.usb0 "$gadget"/configs/c.1/hid.usb0; do
+        [[ -L "$f" ]] && rm -f "$f"
     done
     rmdir "$gadget"/configs/c.1/strings/0x409 2>/dev/null || true
     rmdir "$gadget"/configs/c.1 2>/dev/null || true
     rmdir "$gadget"/functions/acm.usb0 2>/dev/null || true
+    rmdir "$gadget"/functions/hid.usb0 2>/dev/null || true
     rmdir "$gadget"/strings/0x409 2>/dev/null || true
     rmdir "$gadget" 2>/dev/null || true
 }
